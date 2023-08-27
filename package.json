@@ -1,0 +1,24 @@
+{
+  "name": "multiple-uploader",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "pnpm vite",
+    "test": "vitest",
+    "coverage": "vitest run --coverage"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "formidable": "^3.5.1",
+    "happy-dom": "^10.11.0",
+    "typescript": "^5.1.6",
+    "vite": "^4.4.9",
+    "vitest": "^0.34.3"
+  },
+  "dependencies": {
+    "@types/node": "^20.5.6"
+  }
+}
