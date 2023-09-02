@@ -1,67 +1,64 @@
 import fs from "fs";
 import path from "path";
+import nodeUrl from "url";
+import { Buffer } from "buffer";
 import formidable from "formidable";
 import type { Plugin } from "vite";
 
 const UPLOAD_PATH = path.resolve(__dirname, "../upload");
+const TEMP_PATH = path.resolve(UPLOAD_PATH, "temp");
+
 const delayRep = (fn) => {
   setTimeout(() => {
     fn();
-  }, 2000);
+  }, 1500);
 };
 
 const mergeChunks = (fileName: string) => {
-  const chunks = fs.readdirSync(UPLOAD_PATH);
-  const filePath = path.resolve(UPLOAD_PATH, fileName);
+  const { name } = path.parse(fileName);
+  const fileDir = path.resolve(TEMP_PATH, name);
 
-  // 创建存储文件
-  fs.writeFileSync(filePath, "");
-
-  for (let i = 0; i < chunks.length; i++) {
-    let chunkPath = path.resolve(UPLOAD_PATH, chunks[i]);
-
-    // 追加写入到文件中
-    fs.appendFileSync(filePath, fs.readFileSync(chunkPath));
-    // 删除本次使用的chunk
-    fs.unlinkSync(chunkPath);
-  }
-};
-
-let fileName = "";
-
-const handleSingleUpload = async (req, res, next) => {
-  let isAborted = false;
-
-  req.on("aborted", () => {
-    isAborted = true;
+  let len = 0;
+  let partList: string[] = [];
+  let bufferList = fs.readdirSync(fileDir).map((val, index) => {
+    const partPath = path.resolve(fileDir, `${index}.part`);
+    const buffer = fs.readFileSync(partPath);
+    len += buffer.length;
+    partList.push(partPath);
+    return buffer;
   });
 
-  const url = req.originalUrl || "";
+  const buffer = Buffer.concat(bufferList, len);
+  const ws = fs.createWriteStream(path.resolve(UPLOAD_PATH, fileName));
+  ws.write(buffer);
+  ws.close();
+  ws.on("finish", () => {
+    partList.forEach((partPath) => {
+      fs.unlinkSync(partPath);
+    });
+    fs.rmdirSync(fileDir);
+  });
+};
 
-  if (!url.includes("/upload")) {
+const handleSingleUpload = async (req, res, next) => {
+  const url = nodeUrl.parse(req.originalUrl || "", true);
+
+  if (!url.path?.includes("/upload")) {
     return next();
   }
 
   delayRep(async () => {
-    if (res.destroyed || isAborted) {
-      return;
-    }
+    if (url.path?.includes("/upload/merge")) {
+      const fileName = url.query?.fileName || "";
 
-    if (url.includes("/upload/merge")) {
       try {
-        mergeChunks(fileName);
+        mergeChunks(fileName as string);
         res.end("upload successed");
       } catch (error) {
         res.writeHead(400, { "Content-Type": "text/plain" });
         res.end("upload failed");
       }
 
-      return;
-    }
-
-    if (!req.headers.token) {
-      res.writeHead(401, { "Content-Type": "text/plain" });
-      res.end("Access Denied");
       return;
     }
 
@@ -74,9 +71,8 @@ const handleSingleUpload = async (req, res, next) => {
 
       const file = files.file[0];
       const chunk = +fields.chunk[0];
-      const chunks = +fields.chunks[0];
-      const random = +fields.random[0];
-      fileName = path.basename(fields.fileName[0]);
+      const random = +fields.random?.[0];
+      const fileName = path.parse(fields.fileName[0]).name;
 
       if (random == chunk) {
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -89,10 +85,13 @@ const handleSingleUpload = async (req, res, next) => {
         return;
       }
 
-      fs.renameSync(
-        file.filepath,
-        path.resolve(UPLOAD_PATH, `${fileName}-part${chunk}.part`)
-      );
+      const dir = path.join(TEMP_PATH, fileName);
+
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir);
+      }
+
+      fs.renameSync(file.filepath, path.resolve(dir, `${chunk}.part`));
     } catch (err) {
       console.error(err);
       res.writeHead(err.httpCode || 400, { "Content-Type": "text/plain" });
@@ -113,7 +112,6 @@ const handleSingleUpload = async (req, res, next) => {
 export const mockPlugin = () => {
   return {
     configureServer(server) {
-      let fileName = "";
       server.middlewares.use(handleSingleUpload);
     },
   } as Plugin;

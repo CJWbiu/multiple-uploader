@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "pnpm vite",
+    "build": "pnpm vite build",
     "test": "vitest",
     "coverage": "vitest run --coverage"
   },
