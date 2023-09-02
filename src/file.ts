@@ -1,63 +1,46 @@
 import { EventEmitter } from "./event";
+import type { MFileChunk, MFileOptions } from "./types";
+import { MFileStatus } from "./types";
+import logger from "./logger";
 
-export interface MFileOptions {
-  file?: File;
-  chunkSize?: number;
+export const MFILE_EVENTS = {
+  init: "file-inited",
+  progress: "upload-progress",
+  failed: "upload-failed",
+  success: "upload-successed",
+  beforeChunkSend: "upload-before-send",
+  pause: "upload-paused",
+  cancel: "upload-canceled",
+  complete: "upload-completed",
+};
 
-  /**Number of trials after failure */
-  chunkRetry?: number;
-
-  /**Concurrent number */
-  threads?: number;
-
-  method?: "POST" | "GET";
-  server: string;
-  xhrTimeout?: number;
-  checkRes?: (status: number, resData: Record<string, any> | string) => boolean;
-}
-
-export interface MFileChunk {
-  index: number;
-
-  /** start Byte */
-  start: number;
-
-  /** end Byte */
-  end: number;
-
-  loaded: number;
-
-  retryCount: number;
-
-  xhr: XMLHttpRequest | null;
-}
-
-export enum MFileStatus {
-  INIT = "INIT",
-  UPLOADING = "UPLOADING",
-  PAUSED = "PAUSED",
-  CANCELED = "CANCELED",
-  SUCCESSED = "SUCCESSED",
-  FAILED = "FAILED",
-}
-
-const DEFAULT_OPTIONS: Omit<Required<MFileOptions>, "file" | "server"> = {
+export const DEFAULT_OPTIONS: Required<MFileOptions> = {
   chunkSize: 5 * 1024 * 1024,
   chunkRetry: 3,
   threads: 1,
   method: "POST",
   xhrTimeout: 10000,
+  server: "",
   checkRes: (status) => {
     return status === 200;
   },
 };
 
+let id = 0;
+
+function getUUID() {
+  return `${Date.now()}_${id++}`;
+}
+
 export class MFile extends EventEmitter {
-  private options: Required<MFileOptions>;
-  private chunks!: MFileChunk[];
-  private successedChunks!: MFileChunk[];
-  private status!: MFileStatus;
   private activeChunkIndex!: number;
+  private successedChunks!: MFileChunk[];
+  public options: Required<MFileOptions>;
+  public chunks!: MFileChunk[];
+  public status!: MFileStatus;
+  public id!: string;
+  public file!: File;
+  public fileName!: string;
 
   constructor(options: MFileOptions) {
     super();
@@ -66,35 +49,31 @@ export class MFile extends EventEmitter {
       ...DEFAULT_OPTIONS,
       ...options,
     } as Required<MFileOptions>;
-
-    if (this.options.file) {
-      this.init();
-    }
   }
 
   private init() {
     this.chunks = [];
     this.successedChunks = [];
     this.activeChunkIndex = 0;
+    this.id = getUUID();
 
     this.setStatus(MFileStatus.INIT);
     this.initChunks();
 
-    this.emit("file-inited", this.options.file);
+    this.emit(MFILE_EVENTS.init, this);
   }
 
   private initChunks() {
-    const { chunkSize, file } = this.options;
+    const { chunkSize } = this.options;
 
-    let fileSize = file.size;
-    let originSize = file.size;
+    let fileSize = this.file.size;
     let index = 0;
 
     while (fileSize > 0) {
       this.chunks.push({
         index,
         start: index * chunkSize,
-        end: Math.min(originSize, (index + 1) * chunkSize),
+        end: (index + 1) * chunkSize,
         xhr: null,
         loaded: 0,
         retryCount: 0,
@@ -114,7 +93,8 @@ export class MFile extends EventEmitter {
   }
 
   public setFile(file: File) {
-    this.options.file = file;
+    this.file = file;
+    this.fileName = file.name;
     this.init();
   }
 
@@ -151,19 +131,23 @@ export class MFile extends EventEmitter {
 
     const chunkIndex = this.activeChunkIndex++;
 
-    console.log(`start to send chunk: ${chunkIndex}/${this.chunks.length}`);
+    logger.info(
+      `[${this.fileName}] start to send chunk: ${chunkIndex + 1}/${
+        this.chunks.length
+      }`
+    );
 
     if (
       skipSuccess &&
       this.successedChunks.find((item) => item.index === chunkIndex)
     ) {
-      console.log(`skip successed chunk: ${chunkIndex}`);
+      logger.info(`[${this.fileName}] skip successed chunk: ${chunkIndex + 1}`);
       this.sendNext(skipSuccess);
       return;
     }
 
-    const { file, chunkRetry, checkRes, method, server, xhrTimeout } =
-      this.options;
+    const { chunkRetry, checkRes, method, server, xhrTimeout } = this.options;
+    const file = this.file;
     const totalSize = file.size;
     const chunk = this.chunks[chunkIndex];
 
@@ -173,7 +157,7 @@ export class MFile extends EventEmitter {
 
       const onSuccessed = () => {
         this.successedChunks.push(chunk);
-        console.log(`chunk ${chunkIndex} successed`);
+        logger.info(`[${this.fileName}] chunk ${chunkIndex + 1} successed`);
 
         if (this.isStopped()) {
           return;
@@ -181,8 +165,9 @@ export class MFile extends EventEmitter {
 
         if (this.isCompleted()) {
           this.setStatus(MFileStatus.SUCCESSED);
-          console.log(`file ${file.name} upload successed`);
-          this.emit("upload-successed", file);
+          logger.info(`[${this.fileName}] upload successed`);
+          this.emit(MFILE_EVENTS.success, this);
+          this.emit(MFILE_EVENTS.complete, this);
           return;
         }
 
@@ -195,9 +180,14 @@ export class MFile extends EventEmitter {
           return;
         }
 
-        console.error(`chunk ${chunkIndex} failed`);
+        logger.error(`[${this.fileName}] chunk ${chunkIndex + 1} failed`);
         this.setStatus(MFileStatus.FAILED);
-        this.emit("upload-failed", file, this.getResponseData(xhr.response));
+        this.emit(
+          MFILE_EVENTS.failed,
+          this,
+          this.getResponseData(chunk.xhr!.response)
+        );
+        this.emit(MFILE_EVENTS.complete, this);
       };
 
       const onProgress = (event: ProgressEvent<EventTarget>) => {
@@ -210,7 +200,7 @@ export class MFile extends EventEmitter {
         const loaded = this.getLoaded();
         const percentage = Math.round((loaded / totalSize) * 10000) / 100;
 
-        this.emit("upload-progress", file, percentage, loaded, totalSize);
+        this.emit(MFILE_EVENTS.progress, this, percentage, loaded, totalSize);
       };
 
       const onReadyStateChange = () => {
@@ -243,16 +233,20 @@ export class MFile extends EventEmitter {
       );
       chunk.xhr!.upload.addEventListener("progress", onProgress, false);
 
+      let headers: Record<string, string> = {};
+      let formDataObj: Record<string, string | Blob> = {
+        file: blob,
+        chunks: this.chunks.length.toString(),
+        chunk: chunk.index.toString(),
+        fileName: file.name,
+      };
+
+      this.emit(MFILE_EVENTS.beforeChunkSend, this, blob, formDataObj, headers);
       const formData = new FormData();
 
-      formData.append("file", blob);
-      formData.append("chunks", this.chunks.length.toString());
-      formData.append("chunk", chunk.index.toString());
-      formData.append("fileName", file.name);
-
-      let headers: Record<string, string> = {};
-
-      this.emit("upload-before-send", blob, formData, headers);
+      Object.keys(formDataObj).forEach((key) => {
+        formData.append(key, formDataObj[key]);
+      });
 
       chunk.xhr!.open(method, server);
 
@@ -274,6 +268,10 @@ export class MFile extends EventEmitter {
    * @param {boolean} skipSuccess Whether to skip uploaded chunks
    */
   public startUpload(skipSuccess = false) {
+    if (!this.options.server) {
+      throw new Error("Missing parameter: server");
+    }
+
     let count = 0;
     let threads = Math.min(this.options.threads, this.chunks.length);
 
@@ -292,7 +290,7 @@ export class MFile extends EventEmitter {
       if (xhr && xhr.readyState < 4) {
         xhr.abort();
         chunk.xhr = null;
-        console.log(`chunk ${chunk.index} is aborted`);
+        logger.info(`[${this.fileName}] chunk ${chunk.index} is aborted`);
       }
     });
   }
@@ -305,7 +303,7 @@ export class MFile extends EventEmitter {
     this.setStatus(MFileStatus.PAUSED);
     this.abort();
     this.activeChunkIndex = 0;
-    this.emit("upload-paused", this.options.file);
+    this.emit(MFILE_EVENTS.pause, this);
   }
 
   /**
@@ -338,7 +336,7 @@ export class MFile extends EventEmitter {
     this.successedChunks = [];
     this.activeChunkIndex = 0;
 
-    this.emit("upload-canceled", this.options.file);
+    this.emit(MFILE_EVENTS.cancel, this);
   }
 
   /**
@@ -349,10 +347,14 @@ export class MFile extends EventEmitter {
     this.successedChunks = chunks;
   }
 
-  public updateOptions(options: Partial<Omit<MFileOptions, "file">>) {
+  public updateOptions(options: Partial<MFileOptions>) {
     this.options = {
       ...this.options,
       ...options,
     };
+  }
+
+  public getUUID() {
+    return this.id;
   }
 }

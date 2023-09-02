@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Upload Single File</title>
+  </head>
+  <body>
+    <input type="file" name="file" id="file" multiple />
+    <div id="file-list"></div>
+    <button id="starAll">start all</button>
+
+    <script type="module">
+      import MultiUploader from "/src";
+      let fileName = "";
+
+      const fileInput = document.getElementById("file");
+      const fileList = document.getElementById("file-list");
+      const starAll = document.getElementById("starAll");
+      const uploader = new MultiUploader({
+        chunkSize: 50 * 1024,
+        threads: 2,
+        server: "/upload",
+        method: "POST",
+        xhrTimeout: 10000,
+      });
+
+      fileInput.addEventListener("change", (event) => {
+        uploader.addFiles(event.target.files);
+      });
+
+      starAll.addEventListener("click", () => {
+        uploader.upload();
+      });
+
+      uploader.on("file-inited", (file) => {
+        const fileID = file.id;
+        const item = document.createElement("div");
+        item.classList.add("file-item");
+        const result = document.createElement("div");
+        result.id = fileID;
+        result.innerText = `文件名：${file.fileName}`;
+        result.classList.add("result");
+        const btns = document.createElement("div");
+        btns.classList.add("btns");
+        btns.innerHTML = `
+          <button id="start">start</button>
+          <button id="stop">stop</button>
+          <button id="continue">continue</button>
+          <button id="retry">retry</button>
+          <button id="cancel">cancel</button>
+        `;
+
+        item.appendChild(result);
+        item.appendChild(btns);
+        fileList.appendChild(item);
+
+        btns.addEventListener("click", (e) => {
+          switch (e.target.id) {
+            case "start":
+              uploader.upload(fileID);
+              break;
+            case "stop":
+              uploader.pause(fileID);
+              break;
+            case "continue":
+              uploader.continue(fileID);
+              break;
+            case "retry":
+              uploader.retry(fileID);
+              break;
+            case "cancel":
+              uploader.cancel(fileID);
+              break;
+            default:
+              return;
+          }
+        });
+      });
+
+      uploader.on("upload-successed", (file) => {
+        document.getElementById(file.id).innerText = "上传成功！";
+        fetch("/upload/merge?fileName=" + `${file.id}_${file.fileName}`);
+      });
+
+      uploader.on("upload-failed", (file, res) => {
+        document.getElementById(file.id).innerText = `上传失败：${
+          typeof res === "string" ? res : res.message
+        }`;
+      });
+
+      uploader.on("upload-progress", (file, percentage) => {
+        document.getElementById(file.id).innerText = `上传中：${percentage}%`;
+      });
+
+      uploader.on("upload-paused", (file) => {
+        document.getElementById(file.id).innerText = `上传已暂停`;
+      });
+
+      uploader.on("upload-canceled", (file, percentage) => {
+        document.getElementById(file.id).innerText = `上传中已取消`;
+      });
+
+      uploader.on("upload-before-send", (file, blob, formData, header) => {
+        formData.fileName = `${file.id}_${file.fileName}`;
+        header.token = "token";
+      });
+    </script>
+  </body>
+</html>
