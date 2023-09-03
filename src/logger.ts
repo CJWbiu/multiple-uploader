@@ -6,6 +6,10 @@ const logger = {
     console.log(getLog(str));
   },
 
+  warn: (str: string) => {
+    console.warn(getLog(str));
+  },
+
   error: (str: string) => {
     console.error(getLog(str));
   },

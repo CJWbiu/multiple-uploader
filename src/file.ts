@@ -37,7 +37,7 @@ export class MFile extends EventEmitter {
   private successedChunks!: MFileChunk[];
   public options: Required<MFileOptions>;
   public chunks!: MFileChunk[];
-  public status!: MFileStatus;
+  public status = MFileStatus.NONE;
   public id!: string;
   public file!: File;
   public fileName!: string;

@@ -32,6 +32,7 @@ export interface MFileChunk {
 }
 
 export enum MFileStatus {
+  NONE = "NONE",
   INIT = "INIT",
   UPLOADING = "UPLOADING",
   PAUSED = "PAUSED",
